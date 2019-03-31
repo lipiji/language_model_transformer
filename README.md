@@ -3,4 +3,4 @@ language model via transformer
 
 
 #### reference:
-BERT: https://github.com/jcyk/BERT
+transformer: https://github.com/jcyk/BERT
