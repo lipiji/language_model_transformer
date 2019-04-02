@@ -23,6 +23,8 @@ def _is_split_point(ch):
     return False
 
 def process(line):
+    # each line is a document with several sentences
+    # this function can map the documet into several sequences with max_len <= MAX_LEN
     xs = []
     line = line.strip("\n").strip().lower()
     if line == "":

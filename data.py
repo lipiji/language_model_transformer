@@ -2,9 +2,7 @@ import random
 import torch
 import numpy as np
 
-from google_bert import create_instances_from_document
-
-PAD, UNK, CLS, SEP, MASK = '<-PAD->', '<-UNK->', '<-CLS->', '<-SEP->', '<-MASK->'
+PAD, UNK, BOS, EOS = '<pad>', '<unk>', '<bos>', '<eos>'
 BUFSIZE = 4096000
 
 def ListsToTensor(xs, vocab=None):
@@ -16,35 +14,7 @@ def ListsToTensor(xs, vocab=None):
         else:
             y = x + [0]*(max_len -len(x))
         ys.append(y)
-    data = torch.LongTensor(ys).t_().contiguous()
-    return data
-
-def random_mask(tokens, masked_lm_prob, max_predictions_per_seq, vocab):
-    num_to_predict = min(max_predictions_per_seq, max(1, int(round(len(tokens) * masked_lm_prob))))
-    masked_tokens, mask = [], []
-    cand = []
-    for i, token in enumerate(tokens):
-        if token == CLS or token == SEP:
-            continue
-        cand.append(i)
-    random.shuffle(cand)
-    cand = set(cand[:num_to_predict])
-
-    masked_tokens, mask = [], []
-    for i, token in enumerate(tokens):
-        if i in cand:
-            if random.random() < 0.8:
-                masked_tokens.append(MASK)
-            else:
-                if random.random() < 0.5:
-                    masked_tokens.append(token)
-                else:
-                    masked_tokens.append(vocab.random_token())
-            mask.append(1)
-        else:
-            masked_tokens.append(token)
-            mask.append(0)
-    return masked_tokens, mask
+    return ys
 
 def _back_to_text_for_check(x, vocab):
     w = x.t().tolist()
@@ -52,26 +22,16 @@ def _back_to_text_for_check(x, vocab):
         print (' '.join(sent))
     
 def batchify(data, vocab):
-    truth, inp, seg, msk = [], [], [], []
-    nxt_snt_flag = []
-    for a, b, r in data:
-        x = [CLS]+a+[SEP]+b+[SEP]
-        truth.append(x)
-        seg.append([0]*(len(a)+2) + [1]*(len(b)+1))
-        masked_x, mask = random_mask(x, 0.15, 20, vocab)
-        inp.append(masked_x)
-        msk.append(mask)
-        if r:
-            nxt_snt_flag.append(0)
-        else:
-            nxt_snt_flag.append(1)
+    truth, inp, msk = [], [], []
+    for x in data:
+        inp.append(x[:-1])
+        truth.append(x[1:])
+        msk.append([1 for i in range(len(x) -1)])
 
-    truth = ListsToTensor(truth, vocab)
-    inp = ListsToTensor(inp, vocab)
-    seg = ListsToTensor(seg)
-    msk = ListsToTensor(msk).to(torch.uint8)
-    nxt_snt_flag = torch.ByteTensor(nxt_snt_flag)
-    return truth, inp, seg, msk, nxt_snt_flag
+    truth = torch.LongTensor(ListsToTensor(truth, vocab)).t_().contiguous()
+    inp = torch.LongTensor(ListsToTensor(inp, vocab)).t_().contiguous()
+    msk = torch.FloatTensor(ListsToTensor(msk)).t_().contiguous()
+    return truth, inp, msk
 
 class DataLoader(object):
     def __init__(self, vocab, filename, batch_size, max_len):
@@ -92,19 +52,12 @@ class DataLoader(object):
             self.stream = open(self.filename, encoding='utf8')
             lines = self.stream.readlines(BUFSIZE)
 
-        docs = [[]]
-        for line in lines:
+        data = []
+        for line in lines[:-1]: #the last sent may be imcomplete
             tokens = line.strip().split()
             if tokens:
-                docs[-1].append(tokens)
-            else:
-                docs.append([])
-        docs = [x for x in docs if x]
-        random.shuffle(docs)
-
-        data = []
-        for idx, doc in enumerate(docs):
-            data.extend(create_instances_from_document(docs, idx, self.max_len))
+                data.append(tokens)
+        random.shuffle(data)
 
         idx = 0
         while idx < len(data):
@@ -113,7 +66,7 @@ class DataLoader(object):
 
 class Vocab(object):
     def __init__(self, filename, min_occur_cnt, specials = None):
-        idx2token = [PAD, UNK] + ( specials if specials is not None else [])
+        idx2token = [PAD, UNK, BOS, EOS] + (specials if specials is not None else [])
         for line in open(filename, encoding='utf8').readlines():
             try: 
                 token, cnt = line.strip().split()

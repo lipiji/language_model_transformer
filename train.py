@@ -5,8 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 
-from bert import BERTLM
-from data import Vocab, DataLoader, CLS, SEP, MASK
+from biglm import BIGLM
+from data import Vocab, DataLoader
 from adam import AdamWeightDecayOptimizer
 
 import argparse, os
@@ -58,15 +58,15 @@ def average_gradients(model):
 def run(args, local_rank):
     """ Distributed Synchronous """
     torch.manual_seed(1234)
-    vocab = Vocab(args.vocab, min_occur_cnt=args.min_occur_cnt, specials=[CLS, SEP, MASK])
-    if (args.world_size==1 or dist.get_rank() ==0):
+    vocab = Vocab(args.vocab, min_occur_cnt=args.min_occur_cnt, specials=[])
+    if (args.world_size == 1 or dist.get_rank() == 0):
         print (vocab.size)
-    model = BERTLM(local_rank, vocab, args.embed_dim, args.ff_embed_dim, args.num_heads, args.dropout, args.layers, args.approx)
+    model = BIGLM(local_rank, vocab, args.embed_dim, args.ff_embed_dim, args.num_heads, args.dropout, args.layers, args.approx)
     if args.start_from is not None:
         ckpt = torch.load(args.start_from, map_location='cpu')
         model.load_state_dict(ckpt['model'])
     model = model.cuda(local_rank)
-    
+   
     weight_decay_params = []
     no_weight_decay_params = []
     
@@ -78,8 +78,8 @@ def run(args, local_rank):
     grouped_params = [{'params':weight_decay_params, 'weight_decay':0.01},
                         {'params':no_weight_decay_params, 'weight_decay':0.}]
     if args.world_size > 1:
-        torch.manual_seed(1234+dist.get_rank())
-        random.seed(5678+dist.get_rank())
+        torch.manual_seed(1234 + dist.get_rank())
+        random.seed(5678 + dist.get_rank())
     
     if args.fp16:
         try:
@@ -88,7 +88,7 @@ def run(args, local_rank):
         except ImportError:
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
         optimizer = FusedAdam(grouped_params,
-                              lr=1e-4,
+                              lr=args.lr,
                               betas=(0.9, 0.999),
                               eps =1e-6,
                               bias_correction=False,
@@ -97,31 +97,28 @@ def run(args, local_rank):
 
     else:
         optimizer = AdamWeightDecayOptimizer(grouped_params,
-                           lr=1e-4, betas=(0.9, 0.999), eps=1e-6)
+                           lr=args.lr, betas=(0.9, 0.999), eps=1e-6)
     if args.start_from is not None:
         optimizer.load_state_dict(ckpt['optimizer'])
 
     train_data = DataLoader(vocab, args.train_data, args.batch_size, args.max_len)
     batch_acm = 0
-    acc_acm, ntokens_acm, acc_nxt_acm, npairs_acm, loss_acm = 0., 0., 0., 0., 0.
+    acc_acm, ntokens_acm, npairs_acm, loss_acm = 0., 0., 0., 0.
     while True:
         model.train()
-        for truth, inp, seg, msk, nxt_snt_flag in train_data:
+        for truth, inp, msk in train_data:
             batch_acm += 1
             if batch_acm <= args.warmup_steps:
                 update_lr(optimizer, args.lr*batch_acm/args.warmup_steps)
             truth = truth.cuda(local_rank)
             inp = inp.cuda(local_rank)
-            seg = seg.cuda(local_rank)
             msk = msk.cuda(local_rank)
-            nxt_snt_flag = nxt_snt_flag.cuda(local_rank)
 
             optimizer.zero_grad()
-            res, loss, acc, ntokens, acc_nxt, npairs = model(truth, inp, seg, msk, nxt_snt_flag)
+            res, loss, acc, ntokens, npairs = model(truth, inp, msk)
             loss_acm += loss.item()
             acc_acm += acc
             ntokens_acm += ntokens
-            acc_nxt_acm += acc_nxt
             npairs_acm += npairs
             if args.fp16:
                 optimizer.backward(loss)
@@ -132,8 +129,8 @@ def run(args, local_rank):
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             if (args.world_size==1 or dist.get_rank() ==0) and batch_acm%args.print_every == -1%args.print_every:
-                print ('batch_acm %d, loss %.3f, acc %.3f, nxt_acc %.3f'%(batch_acm, loss_acm/args.print_every, acc_acm/ntokens_acm, acc_nxt_acm/npairs_acm))
-                acc_acm, ntokens_acm, acc_nxt_acm, npairs_acm, loss_acm = 0., 0., 0., 0., 0.
+                print ('batch_acm %d, loss %.3f, acc %.3f, x_acm %d'%(batch_acm, loss_acm/args.print_every, acc_acm/ntokens_acm, npairs_acm))
+                acc_acm, ntokens_acm, loss_acm = 0., 0., 0.
             if (args.world_size==1 or dist.get_rank() ==0) and batch_acm%args.save_every == -1%args.save_every:
                 if not os.path.exists(args.save_dir):
                     os.mkdir(args.save_dir)
@@ -143,7 +140,7 @@ def init_processes(args, local_rank, fn, backend='nccl'):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = args.MASTER_ADDR
     os.environ['MASTER_PORT'] = args.MASTER_PORT
-    dist.init_process_group(backend, rank=args.start_rank+local_rank, world_size=args.world_size)
+    dist.init_process_group(backend, rank=args.start_rank + local_rank, world_size=args.world_size)
     fn(args, local_rank)
 
 if __name__ == "__main__":

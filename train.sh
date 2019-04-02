@@ -1,20 +1,20 @@
-python3 train.py --embed_dim 768 \
-                      --ff_embed_dim 3072 \
-                      --num_heads 12 \
-                      --layers 12 \
+CUDA_VISIBLE_DEVICES=4,7 python3 -u train.py --embed_dim 512 \
+                      --ff_embed_dim 1024 \
+                      --num_heads 8 \
+                      --layers 6 \
                       --dropout 0.1 \
-                      --train_data toy/train\
-                      --vocab toy/vocab\
-                      --min_occur_cnt 50\
-                      --batch_size 64\
+                      --train_data ./data/data.txt\
+                      --vocab ./data/vocab.txt\
+                      --min_occur_cnt 1000\
+                      --batch_size 8\
                       --warmup_steps 10000\
                       --lr 1e-4\
-                      --max_len 128\
-                      --world_size 8\
-                      --gpus 8\
-                      --MASTER_ADDR localhost\
-                      --MASTER_PORT 29556\
+                      --max_len 1000\
+                      --world_size 2\
+                      --gpus 2\
                       --start_rank 0\
+                      --MASTER_ADDR localhost\
+                      --MASTER_PORT 28512\
                       --print_every 100\
                       --save_every 10000\
                       --save_dir ckpt\
